@@ -128,7 +128,11 @@ static void collect_depth(struct fib6_node *root,
 	unsigned long totdepth, depth;
 	unsigned int count;
 	struct fib6_node *fn, *pn, *node;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,18,0)
+	struct fib6_info *leaf;
+#else
 	struct rt6_info *leaf;
+#endif
 	enum fib6_walk_state state;
 	for (node = root, leaf = NULL,
 		     depth = 0, totdepth = 0, count = 0, *maxdepth = 0, *avgdepth = 0,
@@ -324,6 +328,7 @@ static int do_bench(char *buf, int verbose)
 		dst = ip6_route_output(&init_net, NULL, &fl6);
 		t2 = get_cycles();
 		if (dst->error == -ENETUNREACH) {
+			printk_ratelimited(KERN_WARNING "not reachable\n");
 			dst_release(dst);
 			continue;
 		}
@@ -357,9 +362,17 @@ static int do_bench(char *buf, int verbose)
 		do {
 			unsigned long avgdepth, maxdepth;
 			struct fib6_table *table = init_net.ipv6.fib6_main_tbl;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
+			spin_lock_bh(&table->tb6_lock);
+#else
 			read_lock_bh(&table->tb6_lock);
+#endif
 			collect_depth(&table->tb6_root, &avgdepth, &maxdepth);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
+			spin_unlock_bh(&table->tb6_lock);
+#else
 			read_unlock_bh(&table->tb6_lock);
+#endif
 			scnprintf(buf + strnlen(buf, PAGE_SIZE), PAGE_SIZE - strnlen(buf, PAGE_SIZE),
 				  "table=%u avgdepth=%lu.%lu maxdepth=%lu\n",
 				  table->tb6_id, avgdepth/10, avgdepth%10, maxdepth);

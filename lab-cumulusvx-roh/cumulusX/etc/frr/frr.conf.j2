@@ -1,0 +1,19 @@
+frr defaults datacenter
+service integrated-vtysh-config
+log syslog informational
+
+{% for iface in neighbors.split(",") %}
+interface {{ iface }}
+  no ipv6 nd suppress-ra
+  ipv6 nd ra-interval 3
+!
+{% endfor %}
+router bgp {{ asn }}
+ bgp router-id {{ loopback }}
+ bgp bestpath as-path multipath-relax
+ network {{ loopback }}/32
+{% for iface in neighbors.split(",") %}
+ neighbor {{ iface }} interface remote-as external
+ neighbor {{ iface }} interface v6only
+{% endfor %}
+!

@@ -1,7 +1,6 @@
 #!/bin/sh
 
-# Execute benchmark for all kernels. This is not very reliable as if
-# the latest kernel is not a stable release, it doesn't work.
+# Execute benchmark for all kernels.
 
 set -ex
 
@@ -10,14 +9,40 @@ TREE=$1
 shift
 
 for version in $(git --git-dir="$TREE"/.git tag \
-    | grep '^v[34][0-9.]*$' \
+                     -l --sort='-taggerdate' --format='%(taggerdate:short) %(refname:lstrip=2)' \
+                     v3\* v4\* \
+    | awk '{print $2}' \
+    | grep '^v[2-9][0-9.]*$' \
     | sort -Vr \
-    | awk 'BEGIN { prefix="NOTHING" }
-           (substr($0, 0, length(prefix)) == prefix) { next }
-           { print ; sub(/\.[0-9]+$/, "") ; prefix=$0 }'); do
+    | awk -F'.' '($2!=last) {last=$2;print}'); do
     version=${version#v}
-    (cd "$TREE" ; git checkout v$version
+    (cd "$TREE" ; git clean -fd ; git reset --hard ; git checkout v$version
      case $version in
+         4.15.*)
+             git cherry-pick 4b0110291ae1d618384cab105b1e2d208a31a6e3
+             git cherry-pick ad343a98e74e85aa91d844310e797f96fee6983b
+             ;;
+         4.13.*|4.12.*|4.11.*|4.10.*)
+             git cherry-pick cd696744d6d71fbb8b5f2728b25afb51cc3811d7
+             git cherry-pick 941bfd125c78713649eefb338e52300585fd6ec7
+             git cherry-pick faf470583a5701c286c62f0dfaaa06964a8c4ed8
+             ;;
+         4.8.*)
+             git cherry-pick cd696744d6d71fbb8b5f2728b25afb51cc3811d7
+             git cherry-pick 941bfd125c78713649eefb338e52300585fd6ec7
+             git cherry-pick faf470583a5701c286c62f0dfaaa06964a8c4ed8
+             git cherry-pick 85f687708c81
+             git cherry-pick 8de6ea44af5c
+             ;;
+         4.7.*|4.6.*|4.5.*|4.3.*|4.2.*)
+             git cherry-pick cd696744d6d71fbb8b5f2728b25afb51cc3811d7
+             git cherry-pick 941bfd125c78713649eefb338e52300585fd6ec7
+             git cherry-pick faf470583a5701c286c62f0dfaaa06964a8c4ed8
+             git cherry-pick 85f687708c81
+             git cherry-pick 8de6ea44af5c
+             git cherry-pick -Xtheirs 1c7727d0bca0c620850834d8e4913a1f5bdc6cb7
+             git cherry-pick 56df604296c2
+             ;;
          4.0.*) git cherry-pick 99124e4db5b7 ;;
          3.9.*) git cherry-pick 4800af91229e ;;
          3.11.*) git cherry-pick e4037eb7c531 ;;
@@ -38,10 +63,11 @@ for version in $(git --git-dir="$TREE"/.git tag \
             (cd "$TREE"; git am) < 0001-netlink-ignore-unknown-attributes-3.patch
             ;;
     esac
-    rm -f stats/kernel/$version
+    VERSION=$(make --no-print-directory -C "$TREE" kernelversion)
+    [ ! -f stats/kernel/$VERSION ] || continue
     printf "\033]1;$version\007"
     printf "\033]2;$version\007"
     printf "\033k$version\033\\"
     ./bench-kernel "$TREE" "$@" || true
-    [ -f ./stats/kernel/$version ] || break
+    [ -f ./stats/kernel/$VERSION ] || break
 done

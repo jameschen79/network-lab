@@ -1,7 +1,10 @@
 # Route-based VPN with Linux
 
 This is similar to `lab-routed-vpn` but it uses
-[WireGuard](https://www.wireguard.com/) instead of StrongSwan.
+[WireGuard](https://www.wireguard.com/) instead of StrongSwan. See
+[Route-based VPN on Linux with
+WireGuard](https://vincent.bernat.ch/en/blog/2018-route-based-vpn-wireguard)
+for more details.
 
 You can test the result from `Rx`:
 
@@ -22,6 +25,11 @@ one namespace to another is to be encapsulated into an IPsec policy.
 
 The main namespace is using OSPFv3, but this doesn't really
 matter. This is just a way to let each VPN see each others.
+
+We also support transport IPv4 on top of IPv6. To test this aspect,
+use:
+
+    $ ip netns exec R1 ping -c2 10.0.3.1
 
 ## Troubleshooting
 

@@ -12,6 +12,12 @@ using KVM.
 `lab-generic` should always contain the latest iteration of the lab
 and be used as a base for other labs.
 
+For labs exposing some serial console, you can use `socat` to connect:
+
+```
+socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/tmp.N3BTQ07qSG/vm-IOS1-serial2.pipe
+```
+
 Previously, labs were self-contained. This was done to avoid any
 breakage when introducing "new features". However, this didn't work as
 expected and labs become broken because of external changes (kernel
@@ -21,9 +27,36 @@ due to more recent changes. In this case, get the latest commit for a
 lab (`git log --oneline -1 lab-generic` for example) and get a
 checkout for it (`git checkout 22f22864632a`).
 
-**⚠ Warning!** There is a bug in Linux that would prevent the labs
-from working when using a kernel 4.2, 4.3, 4.4 or 4.5. This bug is
-fixed in kernel 4.6 as well as in 4.4.17.
+This lab doesn't work on Ubuntu because they are missing VDE support
+in QEMU. The easiest way is to use `schroot` to work on a Debian
+Buster:
+
+    #!/bin/sh
+    sudo debootstrap buster buster
+    cat <<EOF | sudo tee /etc/schroot/chroot.d/lab
+    [lab]
+    type=directory
+    description=Network lab
+    directory=$PWD/buster
+    users=$USER
+    shell=$SHELL
+    profile=default
+    EOF
+    sudo schroot -c lab apt install \
+        qemu-system-x86 sudo tmux busybox ssh vde2 python3 binutils \
+        dosfstools mtools ansible jq linux-image-amd64 nginx
+
+You may need to uncomment `/dev/shm` line in
+`/etc/schroot/default/fstab`. You also have to add yourself to `kvm`
+group (`sudo adduser $USER kvm`). Then, run:
+
+    schroot -c lab ./setup /boot/$(schroot -c lab ls /boot | grep vmlinuz | head -1)
+
+The `./setup` script takes a Linux kernel as first argument. Have a
+look at
+[eudyptula-boot](https://github.com/vincentbernat/eudyptula-boot/blob/master/minimal-configuration)'s
+`minimal-configuration` script to compile a kernel that should work
+with the lab as well.
 
 License
 -------

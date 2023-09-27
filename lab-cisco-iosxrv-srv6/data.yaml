@@ -1,0 +1,39 @@
+---
+microsegments: true
+r1:
+  index: 1
+  ce:
+    - ce6
+  delays:
+    - 5000
+    - 100
+r2:
+  index: 2
+  delays:
+    - 5000
+    - 2000
+r3:
+  index: 3
+  ce:
+    - ce7
+  delays:
+    - 2000
+    - 100
+r4:
+  index: 4
+  delays:
+    - 100
+    - 1000
+r5:
+  index: 5
+  delays:
+    - 1000
+    - 100
+ce6:
+  index: 1
+  as: 65101
+  ip: 203.0.113.1/31
+ce7:
+  index: 2
+  as: 65102
+  ip: 203.0.113.3/31

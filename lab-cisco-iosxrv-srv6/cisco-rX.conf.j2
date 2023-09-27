@@ -1,0 +1,202 @@
+{% set alldata = yaml("data.yaml") %}
+{% set data = alldata[uts] %}
+{% set index = data.index %}
+
+{% if data.ce is defined %}
+vrf 1
+ address-family ipv4 unicast
+  import route-target
+   1:1
+  !
+  export route-target
+   1:1
+  !
+ !
+ address-family ipv6 unicast
+  import route-target
+   1:1
+  !
+  export route-target
+   1:1
+  !
+ !
+!
+{% endif %}
+
+interface Loopback0
+ ipv6 address 2001:db8::{{ index }}/128
+!
+interface GigabitEthernet0/0/0/0
+ ipv6 enable
+ no shut
+!
+interface GigabitEthernet0/0/0/1
+ ipv6 enable
+ no shut
+!
+{% if data.ce is defined %}
+  {% for ce in data.ce %}
+interface GigabitEthernet0/0/0/{{ 2 + loop.index0 }}
+ description Towards {{ ce }}
+ no shut
+interface GigabitEthernet0/0/0/{{ 2 + loop.index0 }}.30
+ description Towards {{ ce }} (L3)
+ encapsulation dot1q 30
+ vrf 1
+ ipv4 address {{ alldata[ce].ip | ipaddr("peer") }} {{ alldata[ce].ip | ipaddr("netmask") }}
+ ipv6 address 2001:db8::{{ alldata[ce].ip | ipaddr("peer") }}/{{ alldata[ce].ip | ipaddr("prefix") + 96 }}
+!
+interface GigabitEthernet0/0/0/{{ 2 + loop.index0 }}.20 l2transport
+ description Towards {{ ce }} (L2)
+ encapsulation dot1q 20
+!
+  {% endfor %}
+
+{# E-LINE between two distant CE. Since it is p2p, we only support two CE. #}
+l2vpn
+ xconnect group lab
+  {% for ce in data.ce %}
+  {% if loop.first %}
+  p2p {{ ce }}
+   interface GigabitEthernet 0/0/0/{{ 2 + loop.index0 }}.20
+   neighbor evpn evi 200 service 3234 segment-routing srv6
+    locator MAIN
+  {% endif %}
+  {% endfor %}
+
+route-policy PASS
+  pass
+end-policy
+{% endif %}
+
+router isis 1
+ is-type level-2-only
+ net 49.0000.0000.000{{ index }}.00
+ flex-algo 128
+  metric-type delay
+  advertise-definition
+ !
+ address-family ipv6 unicast
+  metric-style wide
+  segment-routing srv6
+   locator MAIN
+   !
+   locator LATENCY
+   !
+  !
+ !
+ interface Loopback0
+  address-family ipv6 unicast
+  !
+ !
+ interface GigabitEthernet0/0/0/0
+  point-to-point
+  address-family ipv6 unicast
+   fast-reroute per-prefix
+   fast-reroute per-prefix ti-lfa
+  !
+ !
+ interface GigabitEthernet0/0/0/1
+  point-to-point
+  address-family ipv6 unicast
+   fast-reroute per-prefix
+   fast-reroute per-prefix ti-lfa
+  !
+ !
+!
+
+{% if data.ce is defined %}
+evpn
+ segment-routing srv6
+  locator MAIN
+!
+router bgp 65000
+ bgp router-id {{ index }}.{{ index }}.{{ index }}.{{ index }}
+ address-family vpnv4 unicast
+ address-family vpnv6 unicast
+ address-family l2vpn evpn
+ !
+{% for other, odata in alldata.items() if other != uts and odata.ce is defined %}
+ neighbor 2001:db8::{{ odata.index }}
+  remote-as 65000
+  update-source Loopback0
+  address-family vpnv4 unicast
+  address-family vpnv6 unicast
+  address-family l2vpn evpn
+  !
+ !
+{% endfor %}
+ vrf 1
+  rd 1:1
+  address-family ipv4 unicast
+   segment-routing srv6
+    locator LATENCY
+    alloc mode per-vrf
+   !
+   redistribute connected
+  !
+  address-family ipv6 unicast
+   segment-routing srv6
+    locator MAIN
+    alloc mode per-vrf
+   !
+   redistribute connected
+  !
+{% for ce in data.ce %}
+  neighbor {{ alldata[ce].ip | ipaddr("address") }}
+   remote-as {{ alldata[ce].as }}
+   address-family ipv4 unicast
+    route-policy PASS in
+    route-policy PASS out
+  !
+  neighbor 2001:db8::{{ alldata[ce].ip | ipaddr("address") }}
+   remote-as {{ alldata[ce].as }}
+   address-family ipv6 unicast
+    route-policy PASS in
+    route-policy PASS out
+ !
+!
+{% endfor %}
+{% endif %}
+
+segment-routing
+ srv6
+{% if data.ce is defined %}
+  encapsulation
+   source-address 2001:db8::{{ index }}
+  !
+{% endif %}
+  locators
+   locator MAIN
+{% if alldata.microsegments %}
+    micro-segment behavior unode psp-usd
+    prefix fcbb:bb00:{{ index }}::/48
+{% else %}
+    prefix fcbb:0:0:{{ index }}::/64
+{% endif %}
+   !
+   locator LATENCY
+{% if alldata.microsegments %}
+    micro-segment behavior unode psp-usd
+    prefix fcbb:bb08:{{ index }}::/48
+{% else %}
+    prefix fcbb:0:8:{{ index }}::/64
+{% endif %}
+    algorithm 128
+   !
+  !
+ !
+!
+
+performance-measurement
+ interface GigabitEthernet0/0/0/0
+  delay-measurement
+   advertise-delay {{ data.delays[0] }}
+  !
+ !
+ interface GigabitEthernet0/0/0/1
+  delay-measurement
+   advertise-delay {{ data.delays[1] }}
+  !
+ !
+!

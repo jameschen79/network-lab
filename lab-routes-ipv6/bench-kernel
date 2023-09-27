@@ -64,7 +64,7 @@ VERSION=$(make --no-print-directory -C "$TREE" kernelversion)
 }
 
 CC=${CC:-gcc-7}
-QEMU=${QEMU:-qemu-system-$(uname -r)}
+QEMU=${QEMU:-qemu-system-$(uname -m)}
 
 TMP=$(mktemp -d /tmp/bench-kernel.XXXXXXXX)
 trap "rm -rf $TMP" EXIT
@@ -103,6 +103,9 @@ CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_BINFMT_ELF=y
 CONFIG_DEBUG_KERNEL=y
+CONFIG_DEBUG_INFO=y
+CONFIG_STACKTRACE=y
+CONFIG_COREDUMP=y
 CONFIG_VIRTUALIZATION=y
 CONFIG_HYPERVISOR_GUEST=y
 CONFIG_KVM_GUEST=y
@@ -116,8 +119,9 @@ CONFIG_IPV6_SUBTREES=y
 CONFIG_IPV6_SIT=n
 CONFIG_DUMMY=y
 EOF
+
 yes "" | make -C "$TREE" O=${TMP}/kernel CC=${CC} oldconfig
-make -j3 -C "$TREE" O=${TMP}/kernel CC=${CC}
+make -j$(nproc) -C "$TREE" O=${TMP}/kernel CC=${CC}
 make -C "$TREE" O=${TMP}/kernel CC=${CC} INSTALL_PATH=${TMP} install
 
 # Compile the benchmark module
@@ -141,8 +145,8 @@ done
 set -x
 sysctl -qw net.ipv6.route.gc_interval=7200
 sysctl -qw net.ipv6.route.gc_min_interval=7200
-sysctl -qw net.ipv6.route.gc_thresh=1000000
-sysctl -qw net.ipv6.route.max_size=1000000
+sysctl -qw net.ipv6.route.gc_thresh=1000000 # avoid GC
+sysctl -qw net.ipv6.route.max_size=1000000  # avoid GC
 insmod /kbench_mod.ko
 echo 100000 > /sys/kernel/kbench/loop_count
 cat /proc/version | tee /dev/ttyS1
@@ -206,6 +210,8 @@ run() {
     name="$1"
     shift
     args="$*"
+    now=$(date +%s)
+    set -x
     ${QEMU} \
         -enable-kvm \
         -nodefconfig -nodefaults \
@@ -220,7 +226,12 @@ run() {
         -no-reboot \
         -kernel $TMP/vmlinuz* \
         -initrd $TMP/initrd.gz \
-        -append "console=ttyS0 panic=1 oops=panic 8250.nr_uarts=4 $args" || :
+        -append "console=ttyS0 earlyprintk=serial,ttyS0 panic=1 oops=panic 8250.nr_uarts=4 $args" || :
+    set +x
+    if [ $(( $(date +%s) - now )) -le 5 ]; then
+        echo "Press enter to continue"
+        read nothing
+    fi
 
     mkdir -p stats/kernel
     [ ! -s ${TMP}/output ] || {

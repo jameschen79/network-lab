@@ -24,6 +24,9 @@
 # patches:
 #  - 85f687708c81 and 8de6ea44af5c (ilog2_NaN)
 #  - 56df604296c2 (PIC mode)
+#
+# Also have a look at bench-all-kernel in the IPv6 directory. There
+# are some patches cherry-picked for non-LTS kernels.
 
 # As additional arguments, we should have the output of "ip route save"
 # that will be used to restore the same routes. This only works if the
@@ -85,7 +88,7 @@ VERSION=$(make --no-print-directory -C "$TREE" kernelversion)
 }
 
 CC=${CC:-gcc-7}
-QEMU=${QEMU:-qemu-system-$(uname -r)}
+QEMU=${QEMU:-qemu-system-$(uname -m)}
 
 TMP=$(mktemp -d /tmp/bench-kernel.XXXXXXXX)
 trap "rm -rf $TMP" EXIT
@@ -124,6 +127,9 @@ CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_BINFMT_ELF=y
 CONFIG_DEBUG_KERNEL=y
+CONFIG_DEBUG_INFO=y
+CONFIG_STACKTRACE=y
+CONFIG_COREDUMP=y
 CONFIG_VIRTUALIZATION=y
 CONFIG_HYPERVISOR_GUEST=y
 CONFIG_KVM_GUEST=y
@@ -138,7 +144,7 @@ CONFIG_DUMMY=y
 EOF
 
 yes "" | make -C "$TREE" O=${TMP}/kernel CC=${CC} oldconfig
-make -j3 -C "$TREE" O=${TMP}/kernel CC=${CC}
+make -j$(nproc) -C "$TREE" O=${TMP}/kernel CC=${CC}
 make -C "$TREE" O=${TMP}/kernel CC=${CC} INSTALL_PATH=${TMP} install
 
 # Compile the benchmark module
@@ -219,6 +225,8 @@ run() {
     name="$1"
     shift
     args="$*"
+    now=$(date +%s)
+    set -x
     ${QEMU} \
         -enable-kvm \
         -nodefconfig -nodefaults \
@@ -233,7 +241,12 @@ run() {
         -no-reboot \
         -kernel $TMP/vmlinuz* \
         -initrd $TMP/initrd.gz \
-        -append "console=ttyS0 panic=1 oops=panic 8250.nr_uarts=4 $args" || :
+        -append "console=ttyS0 earlyprintk=serial,ttyS0 panic=1 oops=panic 8250.nr_uarts=4 $args" || :
+    set +x
+    if [ $(( $(date +%s) - now )) -le 5 ]; then
+        echo "Press enter to continue"
+        read nothing
+    fi
 
     mkdir -p stats/kernel
     [ ! -s ${TMP}/output ] || {
