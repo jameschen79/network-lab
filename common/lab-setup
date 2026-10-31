@@ -259,6 +259,7 @@ spawn () {
         case $net in
             oob) ;;
             rocker*) setup_switch ${net#rocker} ;;
+            *@*) setup_switch ${net##*@} ;;
             *) setup_switch $net ;;
         esac
     done
@@ -288,6 +289,9 @@ spawn () {
         juniper-vmx)
             start_juniper_vmx
             ;;
+        juniper-vjunos)
+            start_juniper_vjunos
+            ;;
         juniper-firefly)
             start_juniper_firefly
             ;;
@@ -312,6 +316,26 @@ spawn () {
     esac
 }
 
+_check_kernel_version() {
+    # Adapted from https://github.com/torvalds/linux/blob/master/scripts/extract-vmlinux
+    # SPDX-License-Identifier: GPL-2.0
+    cmd="$1"
+    sig1="$2"
+    sig2="$3"
+    poss=$(tr "${sig1}\n${sig2}" "\n${sig2}=" < "$KERNEL" | grep -abo "^${sig2}" || true)
+    [ -n "$poss" ] || return 1
+    for pos in $poss; do
+        pos=${pos%%:*}
+        if tail -c+$pos "$KERNEL" | $cmd 2> /dev/null | strings -20 | \
+                grep ^Linux.version; then
+            return 0
+        fi
+    done
+    command -v ${cmd%% *} 2> /dev/null > /dev/null || \
+        log_warn_msg "Command \`$cmd' not found to uncompress $KERNEL"
+    return 1
+}
+
 check_kernel() {
     [ ! -f $TMP/kernel-checked ] || return 0
     log_begin_msg "Checking kernel version"
@@ -321,29 +345,18 @@ check_kernel() {
     # A recent version of `file` is able to extract the
     # information. Since it is not widely available, let use some hack
     # method.
-    VERSION=$(cat <<EOF |
-cat
-gunzip  \\\037\\\213\\\010 xy
-unxz    \\\3757zXZ\\\000   abcde
-bunzip2 BZh                xy
-unlzma  \\\135\\\0\\\0\\\0 xxx
-EOF
-              while read cmd sig1 sig2; do
-                  case $sig1,$sig2 in
-                      ,) poss="0:_" ;;
-                      *) poss=$(tr "${sig1}\n${sig2}" "\n${sig2}=" < "$KERNEL" | grep -abo "^${sig2}" || true) ;;
-                  esac
-                  [ -n "$poss" ] || continue
-                  for pos in $poss; do
-                      pos=${pos%%:*}
-                      tail -c+$pos "$KERNEL" | $cmd 2> /dev/null | strings -20 | \
-                          grep ^Linux.version | head -1
-                  done
-              done | head -1)
-
-    [ -n "$VERSION" ] || log_error_msg "Unable to determine version for $KERNEL"
+    VERSION=$(false \
+                  || _check_kernel_version gunzip    '\037\213\010' xy     \
+                  || _check_kernel_version unxz      '\3757zXZ\000' abcde  \
+                  || _check_kernel_version bunzip2   'BZh'          xy     \
+                  || _check_kernel_version unlzma    '\135\0\0\0'   xxx    \
+                  || _check_kernel_version 'lzop -d' '\211\114\132' xy     \
+                  || _check_kernel_version 'lz4 -d'  '\002!L\030'   xxx    \
+                  || _check_kernel_version unzstd    '(\265/\375'   xxx    \
+                  || true)
     VERSION="${VERSION#Linux version }"
     VERSION="${VERSION%% *}"
+    [ -n "$VERSION" ] || log_error_msg "Unable to determine version for $KERNEL"
     log_ok_msg "Found kernel $VERSION"
 
     log_begin_msg "Check kernel configuration"
@@ -538,6 +551,11 @@ start_vm () {
                 netargs="$netargs -netdev vde,sock=$TMP/switch-$net.sock,id=net${count}"
                 rockerports="${rockerports} net${count}"
                 ;;
+            *@*)
+                mac=$(mac_address)
+                netargs="$netargs -netdev vde,sock=$TMP/switch-${net##*@}.sock,id=net${count}"
+                netargs="$netargs -device ${net%@*},mac=$mac,netdev=net${count}"
+                ;;
             *)
                 mac=$(mac_address)
                 netargs="$netargs -netdev vde,sock=$TMP/switch-$net.sock,id=net${count}"
@@ -570,7 +588,7 @@ exec nice start-stop-daemon --make-pidfile --pidfile "$TMP/vm-$name.pid" \
      -enable-kvm \
      -no-user-config -nodefaults \
      -display none \
-     -m ${MEM:-192M} \
+     -m ${MEM:-256M} \
      -cpu host \
      -smp ${CPUS:-1} \
      -device virtio-rng \
@@ -1027,6 +1045,77 @@ EOF
     tmux_resize $name/PFE 80 24
 }
 
+start_juniper_vjunos () {
+    name=$NAME
+    setup_switch $name-pfe
+    setup_switch $name-rpio
+    log_info_msg "Start Juniper vJunos $name"
+    netargs=""
+    ssh=$(tcp_port)
+    netargs="$netargs -netdev user,id=oob,hostfwd=tcp:127.0.0.1:${ssh}-:22${hostfwd+,hostfwd=}${hostfwd}"
+    netargs="$netargs -device virtio-net-pci,mac=$oobmac,netdev=oob"
+    [ x$SWITCH_MON = x ] || netargs="$netargs -object filter-dump,id=f1,netdev=oob,file=$TMP/oob-$name.pcap"
+    add_ssh_config $NAME $ssh juniper
+    netargs="$netargs -netdev vde,sock=$TMP/switch-$name-pfe.sock,id=pfe1"
+    netargs="$netargs -device virtio-net-pci,mac=$(mac_address),netdev=pfe1"
+    netargs="$netargs -netdev vde,sock=$TMP/switch-$name-rpio.sock,id=rpio1"
+    netargs="$netargs -device virtio-net-pci,mac=$(mac_address),netdev=rpio1"
+    netargs="$netargs -netdev vde,sock=$TMP/switch-$name-rpio.sock,id=rpio2"
+    netargs="$netargs -device virtio-net-pci,mac=$(mac_address),netdev=rpio2"
+    netargs="$netargs -netdev vde,sock=$TMP/switch-$name-pfe.sock,id=pfe2"
+    netargs="$netargs -device virtio-net-pci,mac=$(mac_address),netdev=pfe2"
+    nbports=0
+    for net in $NET; do
+        nbports=$((nbports + 1))
+    done
+    cat <<EOF > "$TMP/vm-$name-re.exec"
+#!/bin/sh
+printf "\e]2;$name\a"
+qemu-img create -q -f qcow2 -F qcow2 -b $PWD/../images/junos-vjunos.img $TMP/junos-$name.img
+truncate -s 1M $TMP/metadata-$name.img
+mkfs.vfat -n vmm-data $TMP/metadata-$name.img
+mkdir -p $TMP/metadata-$name
+cat - $TMP/ssh-junos.conf junos-$name.conf junos-common.conf <<END 2>/dev/null > $TMP/metadata-$name/juniper.conf
+interfaces {
+  protect: re0:mgmt-0 unit 0 {
+    family inet dhcp;
+  }
+}
+END
+tar -C $TMP/metadata-$name -zcf $TMP/metadata-$name.tgz .
+mcopy -i $TMP/metadata-$name.img $TMP/metadata-$name.tgz ::/vmm-config.tgz
+mcopy -i $TMP/metadata-$name.img $TMP/metadata-$name/juniper.conf ::/juniper.conf
+exec start-stop-daemon --make-pidfile --pidfile "$TMP/vm-$name-re.pid" \
+     --start --startas $(command -v qemu-system-x86_64) -- \
+     -enable-kvm \
+     -no-user-config -nodefaults \
+     -display none \
+     -m ${MEM:-8G} \
+     -smp 4,sockets=1,cores=4,threads=1 \
+     -cpu host \
+     -smbios type=0,vendor=Bochs,version=Bochs \
+     -smbios type=1,manufacturer=Bochs,product=Bochs,serial=chassis_no=0:slot=0:type=1:assembly_id=0x0D20:platform=251:master=0:channelized=no \
+     -smbios type=3,manufacturer=Bochs \
+     -device virtio-rng \
+     \
+     -boot c \
+     -drive file=$TMP/junos-$name.img,if=virtio,media=disk \
+     -drive file=$TMP/metadata-$name.img,format=raw,if=virtio,media=disk \
+     \
+     -chardev stdio,id=charserial0,signal=off \
+     -device isa-serial,chardev=charserial0,id=serial0 \
+     \
+     -chardev socket,id=con0,path=$TMP/vm-$name-re-console.pipe,server=on,wait=off \
+     -mon chardev=con0,mode=readline \
+     \
+     $netargs
+EOF
+    log_info_msg "monitor listening on    $TMP/vm-$name-re-console.pipe"
+    chmod +x "$TMP/vm-$name-re.exec"
+    tmux set-option -wt $(tmux new-window -Pdn $name/RE "$TMP/vm-$name-re.exec") remain-on-exit on
+    tmux_resize $name/RE 80 24
+}
+
 start_juniper_vsrx () {
     name=$NAME
     log_info_msg "Start Juniper vSRX $name"
@@ -1287,7 +1376,7 @@ start_cisco_iosxrv () {
     for net in $NET; do
         mac=$(mac_address)
         netargs="$netargs -netdev vde,sock=$TMP/switch-$net.sock,id=net${count}"
-        netargs="$netargs -device virtio-net-pci,mac=$mac,netdev=net${count}"
+        netargs="$netargs -device e1000,mac=$mac,netdev=net${count}"
         count=$((count+1))
     done
 
@@ -1341,8 +1430,10 @@ exec nice start-stop-daemon --make-pidfile --pidfile "$TMP/vm-$name.pid" \
      -enable-kvm \
      -no-user-config -nodefaults \
      -display none \
-     -m ${MEM:-9G} \
-     -cpu host \
+     -m ${MEM:-16G} \
+     -cpu qemu64,+ssse3,+sse4.1,+sse4.2 \
+     -smp ${CPUS:-2} \
+     -machine smm=off \
      -device virtio-rng \
      \
      -boot c \
@@ -1355,6 +1446,8 @@ exec nice start-stop-daemon --make-pidfile --pidfile "$TMP/vm-$name.pid" \
      -device isa-serial,chardev=charserial1,id=serial1 \
      -chardev socket,id=charserial2,path=$TMP/vm-$name-serial2.pipe,server=on,wait=off \
      -device isa-serial,chardev=charserial2,id=serial2 \
+     -chardev socket,id=charserial3,path=$TMP/vm-$name-serial3.pipe,server=on,wait=off \
+     -device isa-serial,chardev=charserial3,id=serial3 \
      \
      -chardev socket,id=con0,path=$TMP/vm-$name-console.pipe,server=on,wait=off \
      -mon chardev=con0,mode=readline \
@@ -1397,6 +1490,7 @@ EOF
     log_info_msg "monitor listening on          $TMP/vm-$name-console.pipe"
     log_info_msg "aux console listening on      $TMP/vm-$name-serial1.pipe"
     log_info_msg "Calvados console listening on $TMP/vm-$name-serial2.pipe"
+    log_info_msg "Calvados aux listening on     $TMP/vm-$name-serial3.pipe"
     chmod +x "$TMP/vm-$name-real.exec"
     chmod +x "$TMP/vm-$name.exec"
     tmux set-option -wt $(tmux new-window -Pdn $name "$TMP/vm-$name-real.exec") remain-on-exit on
@@ -1922,11 +2016,16 @@ EOF
                 $oobmac)
                     intf=${intf##*/}
                     log_info_msg "Setup OOB interface on $intf"
-                    dhclient $intf
+                    rm -f /usr/sbin/resolvconf /etc/resolv.conf
+                    dhcpcd -q $intf
                     # Run sshd in a not very secure way
                     mkdir /dev/pts
                     mount -n -t devpts devpts /dev/pts
+                    rm -f /etc/shadow
+                    echo "root:*:::::::" > /etc/shadow
+                    echo "sshd:*:::::::" >> /etc/shadow
                     mkdir /var/run/sshd
+                    adduser --quiet --system --no-create-home --home /var/run/sshd --shell /usr/sbin/nologin sshd || true
                     $(command -v sshd) \
                         -f /dev/null \
                         -h /tmp/lab/id_rsa \
